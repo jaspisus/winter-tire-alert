@@ -1,6 +1,11 @@
 # winter-tire-alert
 
-Sends a Telegram notification when the weather forecast for Gdynia shows the mean daily temperature dropping below 7°C for good. That is the usual rule of thumb for when winter tires should already be on, so you get time to book a tire change.
+Sends a Telegram notification when it's time to change tires, based on the weather forecast for Gdynia:
+
+- **Winter alert:** the mean daily temperature is about to stay **below 7°C** for good, so winter tires should go on.
+- **Summer alert:** the mean daily temperature is about to stay **above 7°C**, so you can switch back to summer tires.
+
+Because it works from the forecast, you get the alert days ahead and have time to book a tire change.
 
 It runs as a single Docker container on an **Ubuntu Server** machine (amd64 or arm64, e.g. a mini PC or Raspberry Pi).
 
@@ -9,8 +14,17 @@ It runs as a single Docker container on an **Ubuntu Server** machine (amd64 or a
 ## How it works
 
 1. Once a day, the app fetches the 16-day forecast of mean daily temperatures from [Open-Meteo](https://open-meteo.com/). Open-Meteo is free and needs no API key.
-2. It looks for the first day from which every forecast day stays below the threshold, for at least `MIN_DAYS` days in a row.
-3. If it finds that day, it sends a Telegram message with the date and the forecast, at most once per season.
+2. It looks for the first day from which every forecast day stays on the other side of the threshold, for at least `MIN_DAYS` days in a row.
+3. The app remembers which tires are on the car and only looks for the change **away** from them:
+
+   | Current tires | Looks for | After the alert |
+   |---|---|---|
+   | summer | lasting cold (below 7°C) | switches to winter |
+   | winter | lasting warmth (above 7°C) | switches to summer |
+
+   Each alert is sent once, so the two can't flip back and forth.
+4. Summer alerts are only sent from March to September (`SUMMER_ALERT_MONTHS`). A mild spell in winter won't trigger them.
+5. If a newer forecast moves the date at least 3 days earlier, you get one short reminder.
 
 ## Stack
 
@@ -53,25 +67,8 @@ Check it with `docker compose version`.
 
 ### 2. Get the code
 
-The repository is private, so the server uses a read-only **deploy key**. The key grants access to this one repository only.
-
 ```sh
-ssh-keygen -t ed25519 -f ~/.ssh/winter-tire-alert -N "" -C "winter-tire-alert deploy key"
-cat ~/.ssh/winter-tire-alert.pub
-```
-
-Add the printed public key on GitHub: **repository → Settings → Deploy keys → Add deploy key**. Leave "Allow write access" unchecked.
-
-```sh
-cat >> ~/.ssh/config <<'EOF'
-Host github-winter-tire-alert
-  HostName github.com
-  User git
-  IdentityFile ~/.ssh/winter-tire-alert
-  IdentitiesOnly yes
-EOF
-
-git clone git@github-winter-tire-alert:jaspisus/winter-tire-alert.git ~/winter-tire-alert
+git clone https://github.com/jaspisus/winter-tire-alert.git ~/winter-tire-alert
 cd ~/winter-tire-alert
 ```
 
@@ -93,26 +90,24 @@ chmod 600 .env   # the file contains the bot token
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | required | Bot token from @BotFather |
 | `TELEGRAM_CHAT_ID` | required | Target chat id |
-| `THRESHOLD_C` | `7` | Mean daily temperature threshold (°C) |
-| `MIN_DAYS` | `5` | Minimum length of the cold stretch in the forecast |
+| `CURRENT_TIRES` | `summer` | Tires on the car at first start (`summer` / `winter`). Ignored once the app has saved its state. |
+| `THRESHOLD_C` | `7` | Mean daily temperature threshold (°C), shared by both alerts |
+| `MIN_DAYS` | `5` | Minimum length of the cold or warm stretch in the forecast |
+| `SUMMER_ALERT_MONTHS` | `3-9` | Months in which summer alerts may be sent |
 | `CHECK_HOUR` | `7` | Hour of the daily check (always Europe/Warsaw, regardless of server timezone) |
 | `LAT` / `LON` | Gdynia | Location |
 
 ### 5. Test
 
 ```sh
-# Fetch the forecast and print the message without sending anything
+# Fetch the forecast and print the result without sending or saving anything
 docker compose run --rm tire-alert node src/main.ts --once --dry-run
 
-# Force the condition to check that the Telegram message arrives
+# Force a winter alert to check that the Telegram message arrives
 docker compose run --rm -e THRESHOLD_C=30 tire-alert node src/main.ts --once
 ```
 
-After this test, the season is marked as "notified". To get a real alert later this season, reset the state:
-
-```sh
-docker compose down -v
-```
+The forced test switches the saved state to winter tires. Reset it before going live (see [Resetting the tire state](#resetting-the-tire-state)).
 
 ### 6. Run
 
@@ -135,7 +130,17 @@ The container restarts automatically after a crash or a server reboot (`restart:
 | Stop | `docker compose down` |
 | Uninstall (including state) | `docker compose down -v --rmi local` |
 
-State (whether this season's alert was already sent) lives in the `tire-alert-data` Docker volume, so it survives updates and rebuilds. Logs are rotated automatically (3 × 1 MB).
+State (which tires are on and the last alert) lives in the `tire-alert-data` Docker volume, so it survives updates and rebuilds. Logs are rotated automatically (3 × 1 MB).
+
+### Resetting the tire state
+
+The app only reads `CURRENT_TIRES` on its very first run. To change the tires it thinks are on, for example after changing tires earlier or later than an alert said, delete the saved state and start again:
+
+```sh
+docker compose down -v        # deletes the state volume
+nano .env                     # set CURRENT_TIRES=summer or winter
+docker compose up -d
+```
 
 ## Development
 
@@ -144,5 +149,5 @@ You need Node.js 24 locally.
 ```sh
 npm test                              # unit tests (node:test)
 npm run typecheck                     # tsc --noEmit
-node src/main.ts --once --dry-run     # single check, prints the message instead of sending it
+node src/main.ts --once --dry-run     # single check, prints the result instead of sending it
 ```
