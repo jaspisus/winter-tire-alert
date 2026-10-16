@@ -9,12 +9,10 @@ Because it works from the forecast, you get the alert days ahead and have time t
 
 It runs as a single Docker container on an **Ubuntu Server** machine (amd64 or arm64, e.g. a mini PC or Raspberry Pi).
 
-See [PLAN.md](PLAN.md) for the design.
-
 ## How it works
 
-1. Once a day, the app fetches the 16-day forecast of mean daily temperatures from [Open-Meteo](https://open-meteo.com/). Open-Meteo is free and needs no API key.
-2. It looks for the first day from which every forecast day stays on the other side of the threshold, for at least `MIN_DAYS` days in a row.
+1. Once a day, the app fetches the mean daily temperatures for the last 3 days and the next 16 days from [Open-Meteo](https://open-meteo.com/). Open-Meteo is free and needs no API key.
+2. It looks for the first day from which every day until the end of the forecast stays on the other side of the threshold, for at least `MIN_DAYS` days. A day exactly at the threshold counts for neither side, so it breaks the stretch.
 3. The app remembers which tires are on the car and only looks for the change **away** from them:
 
    | Current tires | Looks for | After the alert |
@@ -24,7 +22,9 @@ See [PLAN.md](PLAN.md) for the design.
 
    Each alert is sent once, so the two can't flip back and forth.
 4. Summer alerts are only sent from March to September (`SUMMER_ALERT_MONTHS`). A mild spell in winter won't trigger them.
-5. If a newer forecast moves the date at least 3 days earlier, you get one short reminder.
+5. If a newer forecast moves the date at least 3 days earlier before that date has passed, you get one short reminder.
+
+Each message gives the first day of the change, the length and mean temperature of the stretch, and the list of daily temperatures.
 
 ## Stack
 
@@ -78,6 +78,8 @@ cd ~/winter-tire-alert
 2. Send any message to your new bot.
 3. Open `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy `message.chat.id`.
 
+If `result` is empty, send the bot another message and refresh: Telegram keeps unread updates for only 24 hours. To get alerts in a group, add the bot to the group, post a message there and use the group's chat id. It is negative, e.g. `-1001234567890`.
+
 ### 4. Configure
 
 ```sh
@@ -104,11 +106,16 @@ chmod 600 .env   # the file contains the bot token
 # Fetch the forecast and print the result without sending or saving anything
 docker compose run --rm tire-alert node src/main.ts --once --dry-run
 
-# Force a winter alert to check that the Telegram message arrives
+# Force a winter alert to check that the Telegram message arrives (state switches to winter)
 docker compose run --rm -e THRESHOLD_C=30 tire-alert node src/main.ts --once
+
+# Force a summer alert (state switches back to summer)
+docker compose run --rm -e THRESHOLD_C=-30 -e SUMMER_ALERT_MONTHS=1-12 tire-alert node src/main.ts --once
 ```
 
-The forced test switches the saved state to winter tires. Reset it before going live (see [Resetting the tire state](#resetting-the-tire-state)).
+Running a forced command a second time sends nothing, because the alert has already switched the state. Without `SUMMER_ALERT_MONTHS=1-12`, the summer test sends nothing from October to February.
+
+The forced tests change the saved state. Reset it before going live (see [Resetting the tire state](#resetting-the-tire-state)).
 
 ### 6. Run
 
@@ -133,6 +140,12 @@ The container restarts automatically after a crash or a server reboot (`restart:
 
 State (which tires are on and the last alert) lives in the `tire-alert-data` Docker volume, so it survives updates and rebuilds. Logs are rotated automatically (3 × 1 MB).
 
+### When something fails
+
+- **Open-Meteo or network error:** the error is logged and the check is retried once after 5 minutes. If that fails too, the next daily check tries again.
+- **Telegram error:** the error is logged and the alert is not marked as sent, so the next check sends it again.
+- **Missing or invalid settings:** the container exits with a clear message in `docker compose logs`. Because of `restart: unless-stopped` it then restarts in a loop, so run the `--dry-run` test first and fix `.env`.
+
 ### Resetting the tire state
 
 The app only reads `CURRENT_TIRES` on its very first run. To change the tires it thinks are on, for example after changing tires earlier or later than an alert said, delete the saved state and start again:
@@ -148,9 +161,18 @@ docker compose up -d
 You need Node.js 24 locally.
 
 ```sh
-npm test                              # unit tests (node:test)
+npm install                           # only needed for the type check (typescript, @types/node)
+npm test                              # all unit tests (node:test)
+node --test test/decide.test.ts       # a single test file
 npm run typecheck                     # tsc --noEmit
 node src/main.ts --once --dry-run     # single check, prints the result instead of sending it
 ```
 
+Command line flags:
+
+- `--once`: run a single check and exit (exit code 1 if it fails). Without it, the app checks at startup and then daily at `CHECK_HOUR`.
+- `--dry-run`: print the result without sending or saving anything. Telegram settings are not required.
+
 Outside Docker the state is saved to `data/state.json` (git-ignored). Set `STATE_FILE` to use another path. In the container it is `/data/state.json`.
+
+Possible extensions: Telegram commands (e.g. `/winter`, `/summer`) to set the current tires from the phone, and a ready-made image on GHCR so the server doesn't have to build it.
