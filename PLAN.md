@@ -13,7 +13,7 @@ Each alert is sent as a **Telegram** notification far enough ahead to book a tir
 - **Weather API: Open-Meteo** (`api.open-meteo.com/v1/forecast`). It is free, needs no API key, provides a 16-day forecast, returns the ready-made `temperature_2m_mean` daily variable and accepts `past_days` for the last few observed days.
   - Gdynia: `latitude=54.5189&longitude=18.5305&timezone=Europe/Warsaw&daily=temperature_2m_mean&forecast_days=16&past_days=3`
 - **Node.js 24 + TypeScript with no build step.** Node 24 runs `.ts` natively (type stripping), so we skip tsc and bundlers. HTTP calls use the built-in `fetch` and tests use the built-in `node:test`.
-  - **No runtime dependencies.** The only optional devDependency is `typescript`, used solely for `tsc --noEmit` type checking during development because Node does not check types itself. The Docker image does not include it.
+  - **No runtime dependencies.** The only devDependencies are `typescript` and `@types/node`, used solely for `tsc --noEmit` type checking during development because Node does not check types itself (`@types/node` provides the types for `process`, `node:*` modules and `fetch`). The Docker image does not include them.
 - **Base image `node:24-slim`.** It is multi-arch (amd64 and arm64), so the same `Dockerfile` builds on an x86 server and on a Raspberry Pi. The image is built **on the server itself** (`docker compose up -d --build`), so no registry is needed.
 - **Scheduler inside the app** (no cron). The process does one check at startup and then one a day at `CHECK_HOUR`. That hour is computed explicitly in `Europe/Warsaw` via `Intl`, so the server's and container's timezone settings don't matter.
 - **Starts automatically after a server reboot.** Docker is enabled in systemd (`systemctl enable docker`), and `restart: unless-stopped` in compose brings the container back up. No custom systemd unit is needed.
@@ -42,7 +42,7 @@ The app remembers which tires are currently on and only looks for the transition
 - **Starting state:** taken from `CURRENT_TIRES` (`summer` or `winter`) on the first run, when there is no state file yet. After that, the state file decides. The current state is logged at every startup.
 - **Mid-winter thaws:** a warm spell in December–February could otherwise trigger a premature summer alert. Summer alerts are therefore only sent within `SUMMER_ALERT_MONTHS` (default `3-9`, i.e. March–September). Winter alerts need no such guard.
 - **Reminder:** after an alert, until day D passes, a newer forecast that moves D at least 3 days earlier triggers one short reminder with the new date.
-- The state is saved to `/data/state.json` in the volume: `{ currentTires, lastAlert: { kind, onset, sentAt } }`.
+- The state is saved to `/data/state.json` in the volume: `{ currentTires, lastAlert: { kind, onset, sentAt, reminded } }`. `reminded` makes sure only one reminder is sent per alert. The starting state is saved on the first run, so from then on `CURRENT_TIRES` is ignored.
 
 ## File structure
 ```
@@ -55,10 +55,14 @@ winter-tire-alert/
 │   ├── decide.ts        # decide(state, onsets, today, config) -> alert | reminder | nothing: pure function
 │   ├── messages.ts      # builds the winter / summer / reminder message texts
 │   ├── state.ts         # read/write /data/state.json
-│   └── telegram.ts      # sendMessage() via api.telegram.org/bot<TOKEN>/sendMessage
+│   ├── telegram.ts      # sendMessage() via api.telegram.org/bot<TOKEN>/sendMessage
+│   └── time.ts          # Europe/Warsaw dates and the next CHECK_HOUR (DST-safe, via Intl)
 ├── test/
 │   ├── analyze.test.ts  # both directions: onset cases, interrupting spell inside the window, too-short series, threshold edge
-│   └── decide.test.ts   # state switching, SUMMER_ALERT_MONTHS guard, reminder rule, no repeat alerts
+│   ├── decide.test.ts   # state switching, SUMMER_ALERT_MONTHS guard, reminder rule, no repeat alerts
+│   ├── config.test.ts   # defaults, validation, month list parsing
+│   ├── messages.test.ts # message texts
+│   └── time.test.ts     # Warsaw dates, next run time across DST switches
 ├── Dockerfile           # node:24-slim, copies only src/ + package.json, USER node, CMD ["node", "src/main.ts"]
 ├── .dockerignore        # .git, .env, node_modules, test, docs
 ├── docker-compose.yml   # service tire-alert: build ., env_file .env, volume tire-alert-data:/data,
@@ -81,6 +85,8 @@ All code comments are in English.
 | `SUMMER_ALERT_MONTHS` | `3-9` | months in which summer alerts may be sent |
 | `CHECK_HOUR` | `7` | hour of the daily check (Europe/Warsaw) |
 | `LAT` / `LON` | Gdynia | location, can be changed |
+| `LOCATION_NAME` | `Gdynia` | place name used in the messages |
+| `STATE_FILE` | `data/state.json` | state path; the Docker image sets `/data/state.json` |
 
 `.env` holds the bot token. On the server it is set to `chmod 600`, and it is excluded from git and from the Docker build context.
 
