@@ -9,7 +9,7 @@ Because it works from the forecast, you get the alert days ahead and have time t
 
 It runs as a single Docker container on an **Ubuntu Server** machine (amd64 or arm64, e.g. a mini PC or Raspberry Pi).
 
-> **Status:** in development. See [PLAN.md](PLAN.md) for the design.
+See [PLAN.md](PLAN.md) for the design.
 
 ## How it works
 
@@ -96,6 +96,7 @@ chmod 600 .env   # the file contains the bot token
 | `SUMMER_ALERT_MONTHS` | `3-9` | Months in which summer alerts may be sent |
 | `CHECK_HOUR` | `7` | Hour of the daily check (always Europe/Warsaw, regardless of server timezone) |
 | `LAT` / `LON` | Gdynia | Location |
+| `LOCATION_NAME` | `Gdynia` | Place name used in the messages |
 
 ### 5. Test
 
@@ -151,3 +152,5 @@ npm test                              # unit tests (node:test)
 npm run typecheck                     # tsc --noEmit
 node src/main.ts --once --dry-run     # single check, prints the result instead of sending it
 ```
+
+Outside Docker the state is saved to `data/state.json` (git-ignored). Set `STATE_FILE` to use another path. In the container it is `/data/state.json`.

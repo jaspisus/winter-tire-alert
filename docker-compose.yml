@@ -1,0 +1,15 @@
+services:
+  tire-alert:
+    build: .
+    env_file: .env
+    volumes:
+      - tire-alert-data:/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 1m
+        max-file: "3"
+
+volumes:
+  tire-alert-data:
